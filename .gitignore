@@ -1,0 +1,7 @@
+*.hex
+*.bin
+*.elf
+*.lst
+*.map
+.claude/*
+.vs/*
