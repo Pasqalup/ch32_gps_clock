@@ -4,14 +4,12 @@
 #include "uart.h"
 
 //GPS update rate is set to 0.1Hz, so we should get a pulse every 10 seconds
-#define PPS_PORT GPIOC
-#define PPS_PIN 5
 #define GPS_SET_RMC_ONLY "$PMTK314,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0*29"
 #define GPS_SET_0_1HZ "$PMTK220,10000*2F"
 
 //alarm buzzer pin
-#define BUZZER_PORT GPIOB
-#define BUZZER_PIN 0
+#define BUZZER_PORT GPIOC
+#define BUZZER_PIN 6
 
 // which buttons are we looking for?
 #define BUTTON_1_MASK 0x01
@@ -33,7 +31,9 @@ uint32_t last_button2_press_time = 0;
 // global variable to store alarm time; format is 0xHHMM, where HH is hours and MM is minutes
 uint16_t alarm_time = 0; // byte 1: hours, byte 2: minutes
 // global time variables for clock time
-uint8_t hours, minutes, seconds;
+uint8_t hours, minutes;
+volatile uint8_t seconds; // only seconds update in interrupt, main loop will handle rolling over minutes and hours and
+                          // updating the display
 // all flags - [pps triggered][colon on][alarm stop]
 volatile uint8_t flags;
 
@@ -53,7 +53,41 @@ typedef enum
 TimeMode_t time_mode = REGULAR_TIME;
 void configure_buzzer(){
 	RCC->APB2PCENR |= RCC_APB2Periph_TIM1; // enable clock for timer 1
-	RCC->APB2PCENR |= RCC_APB2Periph_GPIOB; // enable clock for GPIOB
+	RCC->APB2PCENR |= RCC_APB2Periph_GPIOC; // enable clock for GPIOC
+	GPIOC->CFGLR &= ~( 0x0F << ( 4 * 6 ) ); // clear config for pin C6
+	GPIOC->CFGLR |= ( GPIO_Speed_10MHz | GPIO_CNF_OUT_PP_AF ) << ( 4 * 6 ); // set pin C6 as output, push-pull, 10MHz
+
+	// Reset TIM1 to init all regs
+	RCC->APB2PRSTR |= RCC_APB2Periph_TIM1;
+	RCC->APB2PRSTR &= ~RCC_APB2Periph_TIM1;
+
+	// Prescaler
+	TIM1->PSC = 47;
+
+	// Auto Reload - sets period; with 48MHz clock and 4khz buzzer frequency, we want a period of 12000 cycles
+	TIM1->ATRLR = 249;
+	// set duty cycle to 50
+	TIM1->CH1CVR = 125;
+
+	// Reload immediately
+	TIM1->SWEVGR |= TIM_UG;
+
+	TIM1->CCER |= TIM_CC1E; // enable CH1
+	TIM1->CCER &= ~TIM_CC1P; // active HIGH (normal polarity)
+	// CH1 Mode is output, PWM1 (CC1S = 00, OC1M = 110)
+	TIM1->CHCTLR1 |= TIM_OC1M_2 | TIM_OC1M_1;
+	// Enable TIM1 outputs
+	TIM1->BDTR |= TIM_MOE;
+
+	// force output low before we enable the timer
+	TIM1->CHCTLR1 &= ~( TIM_OC1M ); // clear mode bits
+	TIM1->CHCTLR1 |= ( 0b100 << 4 ); // Force inactive (OC1M = 100)
+
+
+	// Enable TIM1 after set low to avoid pops
+	TIM1->CTLR1 |= TIM_CEN;
+
+
 }
 void configure_pps(){
     // configure pin as input
@@ -62,9 +96,9 @@ void configure_pps(){
     // configure pin change interrupt for rising edge on port c5
     AFIO->EXTICR = AFIO_EXTICR_EXTI5_PC;
 
-    EXTI->FTENR &= ~(1 << 0);  // Disable falling edge
-    EXTI->RTENR |= (1 << 0);   // Enable rising edge
-    EXTI->INTENR |= (1 << 0);  // Enable EXTI0
+    EXTI->FTENR &= ~(1 << 5);  // Disable falling edge
+    EXTI->RTENR |= (1 << 5);   // Enable rising edge
+    EXTI->INTENR |= (1 << 5);  // Enable EXTI5
 
     NVIC_EnableIRQ(EXTI7_0_IRQn);
     NVIC_SetPriority(EXTI7_0_IRQn, 1);
@@ -76,9 +110,9 @@ void configure_pps(){
 void EXTI7_0_IRQHandler( void ) __attribute__((interrupt));
 void EXTI7_0_IRQHandler( void ) 
 {
-    if(EXTI->INTFR & (1 << 0)){ // Check if EXTI0 caused the interrupt
+    if(EXTI->INTFR & (1 << 5)){ // Check if EXTI5 caused the interrupt
         // Clear the interrupt flag
-        EXTI->INTFR = (1 << 0);
+        EXTI->INTFR = (1 << 5);
         // we are at a precision second now!!!!
 		flags |= 0x01; // Set bit 0 to indicate a PPS event occurred
 		seconds++; // increment seconds; the main loop will handle rolling over minutes and hours and updating the
@@ -126,13 +160,36 @@ void SysTick_Handler(void)
 void handle_alarm(){
 	// if we are in regular time mode and the current time matches the alarm time, buzz
 	// if we press snooze, stop buzzing
-	if( time_mode == REGULAR_TIME && ( ( hours << 8 ) | minutes ) == alarm_time && !( flags & 0x04 ) ){
-		// buzz on and off every 500ms
-		if( ( millis() / 500 ) % 2 ){
-			// turn buzzer on
-		} else{
-			// turn buzzer off
+	if( time_mode == REGULAR_TIME && ( ( hours << 8 ) | minutes ) == alarm_time){ // its time!
+		if ( !( flags & 0x04 ) ) // if we haven't stopped the alarm
+		{
+			// buzz on and off every 500ms
+			if ( ( millis() / 500 ) % 2 )
+			{
+				// set pwm mode to turn buzzer on
+				TIM1->CHCTLR1 &= ~( 0b111 << 4 ); // clear OC1M
+				TIM1->CHCTLR1 |= ( 0b110 << 4 ); // PWM mode 1
+			}
+			else
+			{
+				// force low again to turn buzzer off
+				TIM1->CHCTLR1 &= ~( TIM_OC1M ); // clear mode bits
+				TIM1->CHCTLR1 |= ( 0b100 << 4 ); // Force inactive (OC1M = 100)
+			}
 		}
+		else
+		{
+			// if snoozed, make sure buzzer is off
+			TIM1->CHCTLR1 &= ~( TIM_OC1M ); // clear mode bits
+			TIM1->CHCTLR1 |= ( 0b100 << 4 ); // Force inactive (OC1M = 100)
+		}
+	}
+	else {
+		// if not alarm time, make sure buzzer is off
+		TIM1->CHCTLR1 &= ~( TIM_OC1M ); // clear mode bits
+		TIM1->CHCTLR1 |= ( 0b100 << 4 ); // Force inactive (OC1M = 100)
+		// also clear the snooze/stop flag in case we were snoozing and time has moved on
+		flags &= ~0x04; // clear bit 2 so that alarm will buzz next time we hit the alarm time
 	}
 }
 int main(){
@@ -145,6 +202,12 @@ int main(){
 	// configure uart for communication with the PA1616
 	uart_setup();
 	dma_uart_setup();
+
+	//systick init
+	systick_init();
+
+	// configure buzzer
+	configure_buzzer();
 
     //ch455 set system parameters
     //0x0 [koff] [INTENS][7SEG][SLEEP]0[ENA]
@@ -173,7 +236,7 @@ int main(){
 				if ( rx_available() > 0 )
 				{
 					// read the incoming data and parse
-					cleanRead();
+					cleanRead( &systick_millis, 1000);
 					// check if the message is an RMC message
                     if (cmd_buf[0] == '$' && cmd_buf[1] == 'G' && cmd_buf[2] == 'P' && cmd_buf[3] == 'R' && cmd_buf[4] == 'M' && cmd_buf[5] == 'C')
                     {
@@ -186,6 +249,12 @@ int main(){
 						{
                             if (current_field == 1 && cmd_buf[i] == ',') //utc is field 1; this runs when field 1 ends
                             {
+								if (i < 7) // make sure we have enough characters before the comma to parse the time
+								{
+									response_parsed =
+										0; // if not, reset parsed response to 0 since we don't have valid data
+									break; // if not, break out of the loop and wait for the next message
+								}
                                 // parse the time from the utc field, which is in the format hhmmss.sss
 								response_parsed |=
 									( cmd_buf[i - 7] - '0' ) * 10 + ( cmd_buf[i - 6] - '0' ); // put hours in byte 1
@@ -223,10 +292,11 @@ int main(){
 				break;
 
             case CLOCK_READY:
+				handle_alarm(); // check if we need to buzz for the alarm
 				ch455_read_key(); //update button state;
-				uint8_t button_state = ch455_get_key();
+				uint8_t button_state = ch455_get_buttons();
 				//detect rising edge
-				uint8_t changed_buttons = ( button_state ^ last_button_state ) & button_state;
+				uint8_t changed_buttons = ( button_state ^ last_button_state );
 				uint8_t rising_edges = changed_buttons & button_state;
 				uint8_t falling_edges = changed_buttons & ~button_state;
 				if( rising_edges & BUTTON_1_MASK ){
@@ -247,7 +317,8 @@ int main(){
 							time_mode = REGULAR_TIME;
 						}
 					}
-					if(millis-last_button1_press_time >=10000){
+					if ( millis() - last_button1_press_time >= 10000 )
+					{
 						// 10 seconds press rereads gps data
 						state = UART_WAIT_FOR_RX; 
 					}
@@ -300,11 +371,13 @@ int main(){
 						}
 						break;
 					case ALARM_SET_DIG1: // display alarm hour with blinking colon
-						ch455_writeclock( ( alarm_time >> 8 ) & 0xFF, ( alarm_time & 0x00FF ), ( millis() / 500 ) % 2 ); // blink colon every 500ms
+						ch455_writeclock( ( alarm_time >> 8 ) & 0xFF, ( alarm_time & 0x00FF ),
+							( millis() / 500 ) % 2 ); // blink colon every 500ms
 						break;
 					case ALARM_SET_DIG2: // display alarm minute with solid colon
 						ch455_writeclock( ( alarm_time >> 8 ) & 0xFF, ( alarm_time & 0x00FF ), 1 ); // solid colon
 						break;
+				}
 
 				
         }

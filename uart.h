@@ -4,7 +4,7 @@
 #include "ch32fun.h"
 #include <stdbool.h>
 
-#define UART_BR 115200
+#define UART_BR 9600 // baud rate for GPS module
 // longer rx buf for long nmea messages
 #define RX_BUF_LEN 128 // size of receive circular buffer
 
@@ -22,6 +22,6 @@ uint16_t rx_available( void );
 int16_t rx_read( void );
 void rxEnable( void );
 void txEnable( void );
-void cleanRead( void );
+bool cleanRead( volatile uint32_t *now, uint32_t timeout_ms );
 
 #endif // __UART_H__

@@ -132,26 +132,31 @@ int16_t Serial_read( void )
 	rx_tail = ( rx_tail + 1 ) % RX_BUF_LEN;
 	return byte;
 }
-void cleanRead()
+bool cleanRead( volatile uint32_t *now, uint32_t timeout_ms )
 {
 	uint8_t index = 0;
-	cmd_buf[0] = '\0'; // Clear the command buffer
-	while ( rx_available() > 0 )
+	uint32_t start = *now;
+
+	while ( 1 )
 	{
-		int16_t byte = Serial_read();
-		if ( byte != -1 )
+		if ( ( *now - start ) > timeout_ms ) return false;
+
+		if ( rx_available() > 0 )
 		{
+			int16_t byte = Serial_read();
+			if ( byte == -1 ) continue;
+
 			if ( byte == '\n' )
 			{
-				cmd_buf[index] = '\0'; // Null-terminate the command buffer
-				index = 0; // Reset index for next command
+				cmd_buf[index] = '\0';
+				return true;
 			}
-			else if ( byte != '\r' ) // Ignore carriage return
+			else if ( byte != '\r' )
 			{
-				// Append byte to command buffer if there is space
-				cmd_buf[index] = (uint8_t)byte;
-				index++;
+				if ( index < RX_BUF_LEN - 1 ) cmd_buf[index++] = (uint8_t)byte;
 			}
+
+			start = *now; // reset on activity
 		}
 	}
 }

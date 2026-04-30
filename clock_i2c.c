@@ -155,12 +155,12 @@ void i2c_send_raw(const uint8_t *buf, const size_t len){
 	i2c_stop();
 }
 
-void ch455_writeclock(uint8_t hour, uint8_t minute, bool colon_on){
+void ch455_writeclock(uint8_t hour, uint8_t minute, bool colonis_on){
 	uint8_t d0 = dig_num2byte[hour/10];
 	uint8_t d1 = dig_num2byte[hour%10];
 	uint8_t d2 = dig_num2byte[minute/10];
 	uint8_t d3 = dig_num2byte[minute%10];
-	if(colon_on) {
+	if(colonis_on) {
 		// colon is dp of dig 3 & 4 (d2 & d3 here)
 		d2 |= colon_on;
 		d3 |= colon_on;
