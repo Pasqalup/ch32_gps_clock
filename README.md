@@ -3,7 +3,8 @@
 1. Download [ch32fun](https://github.com/cnlohr/ch32fun)
 2. Clone this repository into the examples folder
 ```bash
-cd examples/
+git clone https://github.com/cnlohr/ch32fun.git
+cd ch32fun/examples/
 git clone https://github.com/Pasqalup/ch32_gps_clock.git
 ```
 3. Follow my [guide](https://github.com/Pasqalup/CH32v003-MINI#programming) for programming the devboard
