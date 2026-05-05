@@ -5,3 +5,6 @@
 *.map
 .claude/*
 .vs/*
+slave.c
+CH32V003RM.PDF
+CH455DS1.pdf
